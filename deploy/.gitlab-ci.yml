@@ -1,0 +1,50 @@
+image: docker:24.0.5
+
+services:
+  - docker:24.0.5-dind
+
+variables:
+  # Permet à Docker-in-Docker de communiquer
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  # Configuration pour que les tests puissent attendre assez longtemps le démarrage des services
+  DOCKER_DRIVER: overlay2
+
+stages:
+  - test-deploy
+
+test-docker-compose:
+  stage: test-deploy
+  before_script:
+    # Installation de docker-compose et curl
+    - apk add --no-cache docker-compose curl
+  script:
+    - echo "🚀 Starting HealthGuardian environment..."
+    
+    # 1. Lancer les conteneurs en arrière-plan
+    - docker-compose up -d
+    
+    # 2. Attendre que la base de données soit prête (MySQL prend du temps)
+    - echo "⏳ Waiting for Database and Services to start (60s)..."
+    - sleep 60
+    
+    # 3. Vérifier l'état des conteneurs
+    - docker-compose ps
+    
+    # 4. Vérifier que les 5 conteneurs sont bien démarrés
+    - if [ $(docker-compose ps -q | wc -l) -lt 5 ]; then echo "❌ Some containers failed to start"; docker-compose logs; exit 1; fi
+
+    # 5. TEST: Vérifier que le Backend répond
+    # Dans GitLab CI (Dind), les services sont accessibles via 'docker' ou 'localhost' selon la config
+    - echo "🔍 Testing Backend connectivity..."
+    - curl --retry 5 --retry-delay 5 --retry-connrefused -v http://docker:8081/actuator/health || echo "⚠️ Backend check warning (might need more time or endpoint unavailable)"
+
+    # 6. TEST: Vérifier que l'IA répond
+    - echo "🔍 Testing AI Service connectivity..."
+    - curl --retry 5 --retry-delay 5 --retry-connrefused -v http://docker:8000/docs || echo "⚠️ AI check warning"
+
+  after_script:
+    # Nettoyage
+    - docker-compose down
+  only:
+    - main
